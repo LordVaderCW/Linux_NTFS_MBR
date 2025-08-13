@@ -91,3 +91,6 @@ This project is released under the **GNU GPL Open Source Licence**.
 
 [GitHub Repository](https://github.com/KingJamesIX/Linux_NTFS_MBR)
 
+## Side Notes.
+Still working on this from time to time. its not a priority. but, its buggy. few errors after compilation, that i will eventually figure out. its a learning project. since M$ dont care about the old OS. 
+
