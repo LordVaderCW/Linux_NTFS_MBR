@@ -1,96 +1,165 @@
-# Linux NTFS MBR Bootloader
-; Custom MBR Bootloader for Linux from NTFS ; Based on Windows XP MBR but modified to support Linux bootloaders like GRUB2
+# Linux NTFS MBR Bootloader / XPSL
 
-# Linux NTFS MBR Bootloader
+Research bootloader work for an XP-compatible BIOS/MBR boot path that can read
+from NTFS and load a Linux-oriented shim named `XPSLDR`.
 
-![GitHub License](https://img.shields.io/github/license/KingJamesIX/Linux_NTFS_MBR) ![Status](https://img.shields.io/badge/status-stable-green.svg)
+The long-term idea is **XP Subsystem For Linux**: make Linux able to participate
+in an NT5/Windows XP-style boot environment, using NTFS as the boot volume and
+eventually handing off to a Linux kernel, initrd, GRUB, or Syslinux payload.
 
-## Overview
-This project modifies the **Windows XP MBR bootloader** to allow **native Linux booting from an NTFS partition**. By replacing Windows-specific assumptions (`NTLDR`) with support for **Linux boot sectors**, this bootloader makes dual-booting, system recovery, and legacy hardware support significantly more powerful.
+This repository is currently a proof of concept, not a production bootloader.
 
-## Why Modify the XP Bootloader for Linux?
-This modification **bridges the gap** between Microsoft's legacy boot infrastructure and Linux systems, enabling:
+## What Works Now
 
-### 1. Native NTFS Boot for Linux
-- ✅ Boot Linux **directly from an NTFS partition** without relying on GRUB.
-- ✅ No need for an extra **boot partition** formatted in FAT32 or ext4.
-- ✅ Great for **Windows-Linux hybrid environments**.
+The current VirtualBox proof demonstrates this chain:
 
-### 2. Cross-Booting Without GRUB
-- ✅ Windows Boot Manager **fails? No problem.** Linux can still boot!
-- ✅ Enables a **resilient dual-boot setup** without dependency on multiple bootloaders.
-- ✅ Reduces **bootloader conflicts** between Windows and Linux.
-
-### 3. Windows-Compatible Live Linux Distributions
-- ✅ Boot a **Live Linux distro** directly from NTFS.
-- ✅ No FAT32 **4GB file limit**, allowing **larger kernel images**.
-- ✅ Security-focused distros (Kali, Tails) can now be **NTFS-native**.
-
-### 4. Seamless Windows Recovery Integration
-- ✅ A **Linux recovery system** can be embedded inside a Windows partition.
-- ✅ System administrators can **repair Windows from within Linux**.
-- ✅ Create **hidden NTFS Linux recovery partitions** for system repair.
-
-### 5. Boot Linux on Legacy BIOS Systems Without UEFI
-- ✅ Many **older BIOS-based PCs** lack support for modern Linux booting.
-- ✅ Enables **Linux to boot on older hardware** without modifying partition tables.
-- ✅ Great for **corporate legacy machines** that need NTFS-based system images.
-
-### 6. AI-Powered System Recovery
-- ✅ AI-based Linux diagnostics can **run from within an NTFS partition**.
-- ✅ Enables **self-healing OS recovery tools**.
-- ✅ **Cybersecurity monitoring** can operate inside Windows installations.
-
-## Features
-- 🚀 **Boots Linux natively from an NTFS partition**.
-- 🚀 **No GRUB dependency required**.
-- 🚀 **Works on BIOS-based systems (non-UEFI)**.
-- 🚀 **Provides Windows recovery via embedded Linux rescue mode**.
-- 🚀 **Compatible with GRUB2, Syslinux, and other Linux bootloaders**.
-
-## Requirements
-- A **BIOS-based system**.
-- An **NTFS partition with a Linux bootloader installed**.
-- `nasm` for compiling the bootloader.
-- A tool like `dd` to write the MBR to disk.
-
-## Installation
-### Building the Bootloader
-```sh
-make
+```text
+BIOS
+  -> MBR / partition boot path
+      -> NTFS-aware boot stage
+          -> finds XPSLDR by filename in NTFS metadata
+              -> loads XPSLDR from NTFS resident data
+                  -> jumps to XPSLDR
 ```
-This generates `mbr.bin`, the bootloader binary.
 
-### Installing to a Drive
-⚠ **WARNING:** This writes directly to a disk. Use with caution!
-```sh
-sudo dd if=mbr.bin of=/dev/sdX bs=512 count=1
+In the test VM, the boot code prints checkpoint letters while it walks the NTFS
+metadata, then transfers execution to `XPSLDR`, which prints:
+
+```text
+XPSLDR loaded from NTFS
 ```
-Replace `/dev/sdX` with your actual disk (e.g., `/dev/sda`).
 
-### Verifying the Bootloader
-Reboot your system and check if the bootloader correctly loads Linux from NTFS.
+This proves the central bootloader idea: a BIOS boot path can locate a named
+loader file on an NTFS partition and execute it without depending on `NTLDR`.
 
-## Future Enhancements
-- ✨ **Direct GRUB handoff** from the XP bootloader.
-- ✨ **Custom Linux kernel booting from NTFS**.
-- ✨ **Encrypted NTFS boot partition support**.
+## Current Limits
 
-## Contributing
-Contributions are welcome! Feel free to **fork the repository** and submit a pull request.
+The NTFS volume used for the proof is synthetic and intentionally tiny. It is
+created directly by `tools/write-synthetic-ntfs.ps1`.
+
+Current constraints:
+
+- BIOS/MBR only; no UEFI support yet.
+- Synthetic NTFS metadata, not a full Windows-formatted NTFS volume yet.
+- One root-directory file named `XPSLDR`.
+- `XPSLDR` is stored as resident `$DATA` inside one MFT record.
+- No NTFS data-run decoding yet, so non-resident files are not supported.
+- `XPSLDR` is a real-mode shim proof, not a Linux kernel loader yet.
+- GRUB/Syslinux handoff is a planned next milestone, not complete.
+
+## Repository Layout
+
+- `mbr.asm` - original/early MBR bootloader source.
+- `stage1/xpsl_ntfs_stage1.asm` - current real-mode NTFS stage proof.
+- `stage2/xpsldr.asm` - current `XPSLDR` shim payload.
+- `tools/build-xpsldr.ps1` - builds the shim payload with portable NASM.
+- `tools/build-stage1.ps1` - builds the NTFS boot stage.
+- `tools/write-synthetic-ntfs.ps1` - creates the synthetic NTFS test layout.
+- `tools/install-stage1.ps1` - writes the boot stage into the test disk.
+- `tools/ntfs-find-file.ps1` - host-side parser used to validate NTFS lookup.
+- `docs/xpsl-roadmap.md` - architecture and staged goals.
+- `docs/ntfs-finder-notes.md` - details of the current NTFS proof.
+- `artifacts/` - screenshots and generated test evidence.
+
+## Portable Tooling
+
+The project is set up to use local, portable tools where possible.
+
+Portable NASM is expected at:
+
+```text
+tools/vendor/nasm-2.16.03/nasm.exe
+```
+
+MSYS2 base has also been unpacked under `tools/vendor/msys64` for future GRUB
+or Linux tooling work, although package installation may depend on mirror/network
+availability.
+
+## Build And Test
+
+Build `XPSLDR`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build-xpsldr.ps1
+```
+
+Write the synthetic NTFS test volume and embed `XPSLDR`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\write-synthetic-ntfs.ps1 -DiskPath P:\VM\Debian\XPSL-test-flat.vmdk -FileName XPSLDR -PayloadPath .\build\xpsldr.bin
+```
+
+Build and install the NTFS boot stage:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build-stage1.ps1
+powershell -ExecutionPolicy Bypass -File tools\install-stage1.ps1 -DiskPath P:\VM\Debian\XPSL-test-flat.vmdk
+```
+
+Validate the file lookup from the host side:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\ntfs-find-file.ps1 P:\VM\Debian\XPSL-test-flat.vmdk XPSLDR -ExtractTo build\xpsldr.extracted.bin
+```
+
+Boot the VirtualBox VM normally:
+
+```powershell
+VBoxManage startvm Debian --type gui
+```
+
+When shutting the VM down during tests, use ACPI poweroff:
+
+```powershell
+VBoxManage controlvm Debian acpipowerbutton
+```
+
+## Test Target
+
+The current disposable VirtualBox target is:
+
+```text
+P:\VM\Debian
+```
+
+The active test disk is:
+
+```text
+P:\VM\Debian\XPSL-test-flat.vmdk
+```
+
+This is a test image. Do not aim these scripts at a real disk unless the script
+has been reviewed for that exact disk and the target has been backed up.
+
+## Next Milestones
+
+1. Split the current constrained 512-byte NTFS stage into a small PBR loader and
+   a larger stage1.5 loader.
+2. Add NTFS non-resident `$DATA` support by decoding data runs.
+3. Load a larger `XPSLDR` payload from NTFS.
+4. Teach `XPSLDR` to hand off to GRUB/Syslinux or load a Linux kernel/initrd
+   directly.
+5. Move from the synthetic NTFS volume to a real NTFS-formatted test partition.
+6. Preserve and document a clean handoff ABI: BIOS drive, partition LBA, loader
+   memory map, and boot options.
+
+## Project Goal
+
+The goal is not to replace Linux storage drivers. It is to explore a boot-time
+bridge between the Windows XP/NT5 BIOS boot model and Linux:
+
+- XP-compatible MBR/partition boot behavior.
+- NTFS file discovery before an operating system is running.
+- A Linux-oriented loader filename and handoff path.
+- Future GRUB/Syslinux or Linux boot protocol support from NTFS.
+
+If successful, the project becomes a research base for booting Linux from NTFS
+on legacy BIOS systems and for studying XP-era boot compatibility from the Linux
+side.
 
 ## License
 
-This project is released under the **GNU GPL Open Source Licence**.
-
-## Author
-
-[King James](https://www.facebook.com/HRHKingJamesIXofScotland)
-
-## Repository
-
-[GitHub Repository](https://github.com/KingJamesIX/Linux_NTFS_MBR)
-
-## Side Notes.
-Still working on this from time to time. its not a priority. but, its buggy. few errors after compilation, that i will eventually figure out. its a learning project. since M$ dont care about the old OS. 
+This repository currently includes a `LICENSE` file for the project. Any
+third-party reference material or imported research source should keep its own
+license and attribution separate from the original project code.
 
