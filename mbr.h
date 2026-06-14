@@ -15,7 +15,7 @@
 #define PART_TYPE_LBA 0x0E
 
 // Bootloader code size
-define X86BOOTCODE_SIZE 512
+#define X86BOOTCODE_SIZE 512
 
 // MBR Partition Table Entry Structure
 typedef struct {

@@ -1,132 +1,188 @@
-; Custom MBR Bootloader for Linux from NTFS
-; Based on Windows XP MBR but modified to support Linux bootloaders like GRUB2
-; Removes Windows-specific assumptions (NTLDR) and replaces with Linux boot sector execution
+; Linux NTFS MBR Bootloader
+; Clean-room BIOS MBR chainloader.
 ;
-; Author: King James
-; License: GNU GPL Open Source Licence
-; Repository: https://github.com/KingJamesIX/Linux_NTFS_MBR
+; This stage does not parse NTFS. It finds the single active partition,
+; loads that partition's boot sector at 0000:7C00, validates 0xAA55,
+; and jumps to it. NTFS-aware Linux loading belongs in the partition
+; boot record or a later stage.
 ;
-; Assembly: NASM
-; Install: dd if=mbr.bin of=/dev/sdX bs=512 count=1
-;
-;-------------------------------------------------------------------------------
+; Assembly: nasm -f bin -o mbr.bin mbr.asm
 
-VOLBOOT_ORG             EQU 0x7C00
-SIZE_SECTOR             EQU 512
-PART_IFS                EQU 0x07    ; NTFS Partition Type
-PART_FAT32              EQU 0x0B
-PART_FAT32_XINT13       EQU 0x0C
-PART_XINT13             EQU 0x0E
-BOOTSECTRAILSIGH        EQU 0xAA55
+bits 16
+org 0x7C00
 
-RELOCATION_ORG          EQU 0x0600
-READ_RETRY_CNT          EQU 5
-
-section .text
-org VOLBOOT_ORG
-
-;-------------------------------------------------------------------------------
-; Entry point: Start execution in BIOS boot mode (Real Mode, 16-bit)
-;-------------------------------------------------------------------------------
+LOAD_ADDR       equ 0x7C00
+RELOC_ADDR      equ 0x0600
+PART_TABLE      equ RELOC_ADDR + 0x1BE
+PART_ENTRY_SIZE equ 16
+BOOT_SIGNATURE  equ 0xAA55
+READ_RETRIES    equ 5
 
 start:
+        cli
         xor     ax, ax
+        mov     ds, ax
+        mov     es, ax
         mov     ss, ax
-        mov     sp, VOLBOOT_ORG    ; Setup stack
+        mov     sp, LOAD_ADDR
         sti
         cld
 
-        ; Relocate MBR to 0x600
-        mov     si, VOLBOOT_ORG
-        mov     di, RELOCATION_ORG
-        mov     cx, SIZE_SECTOR
-        rep     movsb
-        jmp     relocate_done
+        mov     [boot_drive], dl
 
-relocate_done:
+        mov     si, LOAD_ADDR
+        mov     di, RELOC_ADDR
+        mov     cx, 256
+        rep     movsw
 
-;-------------------------------------------------------------------------------
-; Locate the active partition in the partition table.
-;-------------------------------------------------------------------------------
+        jmp     0:relocated
 
-        mov     bp, tab   ; Fixed: Removed `offset`
-        mov     cl, 4    ; Four partition entries to check
+relocated equ relocated_here - start + RELOC_ADDR
 
-active_loop:
-        cmp     byte [bp], 0x80  ; Check for active partition
-        jne     check_inactive
-        jmp     StartLoad
+relocated_here:
+        mov     dl, [boot_drive - start + RELOC_ADDR]
+        mov     bp, PART_TABLE
+        mov     cx, 4
+        xor     bx, bx
 
-check_inactive:
-        add     bp, 16  ; Move to next partition entry
-        loop    active_loop
-        int     18h     ; No active partition, boot ROM BASIC
+.scan_active:
+        cmp     byte [bp], 0x80
+        je      .found_active
+        cmp     byte [bp], 0x00
+        jne     invalid_partition
+        add     bp, PART_ENTRY_SIZE
+        loop    .scan_active
+        jmp     missing_os
 
-;-------------------------------------------------------------------------------
-; Load the first sector of the active partition and execute it.
-;-------------------------------------------------------------------------------
+.found_active:
+        mov     si, bp
+        inc     bx
+        cmp     bx, 1
+        ja      invalid_partition
+        add     bp, PART_ENTRY_SIZE
+        loop    .scan_active
 
-StartLoad:
-        call    ReadSector
-        jnc     CheckPbr
+        mov     bp, si
+        call    read_pbr
+        jc      load_error
 
-        ; If failed, check for backup boot sector
-        cmp     byte [bp+4], PART_IFS
-        je      trybackup
-        jmp     display_error
+        cmp     word [LOAD_ADDR + 510], BOOT_SIGNATURE
+        jne     missing_os
 
-trybackup:
-        add     word [bp+8], 6
-        call    ReadSector
-        jnc     CheckPbr
-        jmp     display_error
+        mov     dl, [boot_drive - start + RELOC_ADDR]
+        mov     si, bp
+        push    word 0
+        push    word LOAD_ADDR
+        retf
 
-CheckPbr:
-        cmp     word [VOLBOOT_ORG + SIZE_SECTOR - 2], BOOTSECTRAILSIGH
-        je      done
-        jmp     display_error
+invalid_partition:
+        mov     si, msg_invalid - start + RELOC_ADDR
+        jmp     print_halt
 
-;-------------------------------------------------------------------------------
-; Jump to Linux bootloader
-;-------------------------------------------------------------------------------
+load_error:
+        mov     si, msg_load_error - start + RELOC_ADDR
+        jmp     print_halt
 
-done:
-        mov     si, bp  ; Pass partition table entry to bootloader
-        push    ds
-        push    si
-        retf  ; Fixed: Corrected label issue
+missing_os:
+        mov     si, msg_missing - start + RELOC_ADDR
 
-;-------------------------------------------------------------------------------
-; Display an error message if boot fails
-;-------------------------------------------------------------------------------
-
-display_error:
-        mov     si, error_msg
+print_halt:
         call    print_string
-        jmp     $
+        cli
+.halt:
+        hlt
+        jmp     .halt
 
 print_string:
         lodsb
         test    al, al
-        jz      $
-        mov     ah, 0Eh
-        int     10h
+        jz      .done
+        mov     ah, 0x0E
+        mov     bx, 0x0007
+        int     0x10
         jmp     print_string
-
-section .data
-error_msg db 'Error booting Linux from NTFS', 0
-signa:  dw BOOTSECTRAILSIGH  ; ✅ Fix: moved from .bss to .data
-
-;-------------------------------------------------------------------------------
-; Partition table placeholder
-;-------------------------------------------------------------------------------
-
-section .bss
-align 512
-
-tab:    resb 64  ; Reserved space for partition table
-
-section .text
-ReadSector:
-        ; Placeholder for BIOS read sector function
+.done:
         ret
+
+read_pbr:
+        pusha
+        mov     byte [retry_count - start + RELOC_ADDR], READ_RETRIES
+
+.try_extensions:
+        mov     dl, [boot_drive - start + RELOC_ADDR]
+        mov     ah, 0x41
+        mov     bx, 0x55AA
+        int     0x13
+        jc      .chs_read
+        cmp     bx, 0xAA55
+        jne     .chs_read
+        test    cx, 1
+        jz      .chs_read
+
+.lba_retry:
+        mov     si, dap - start + RELOC_ADDR
+        mov     ah, 0x42
+        mov     dl, [boot_drive - start + RELOC_ADDR]
+        mov     eax, [bp + 8]
+        mov     [dap_lba - start + RELOC_ADDR], eax
+        xor     eax, eax
+        mov     [dap_lba + 4 - start + RELOC_ADDR], eax
+        int     0x13
+        jnc     .success
+        call    reset_disk
+        dec     byte [retry_count - start + RELOC_ADDR]
+        jnz     .lba_retry
+        stc
+        jmp     .done
+
+.chs_read:
+        mov     byte [retry_count - start + RELOC_ADDR], READ_RETRIES
+
+.chs_retry:
+        mov     ax, 0x0201
+        mov     bx, LOAD_ADDR
+        mov     cx, [bp + 2]
+        mov     dh, [bp + 1]
+        mov     dl, [boot_drive - start + RELOC_ADDR]
+        int     0x13
+        jnc     .success
+        call    reset_disk
+        dec     byte [retry_count - start + RELOC_ADDR]
+        jnz     .chs_retry
+        stc
+        jmp     .done
+
+.success:
+        clc
+.done:
+        popa
+        ret
+
+reset_disk:
+        xor     ah, ah
+        mov     dl, [boot_drive - start + RELOC_ADDR]
+        int     0x13
+        ret
+
+boot_drive  db 0
+retry_count db 0
+
+dap:
+        db 16
+        db 0
+        dw 1
+        dw LOAD_ADDR
+        dw 0
+dap_lba:
+        dq 0
+
+msg_invalid    db 'Invalid partition table', 0
+msg_load_error db 'Error loading operating system', 0
+msg_missing    db 'Missing operating system', 0
+
+times 446 - ($ - $$) db 0
+
+partition_table:
+times 64 db 0
+
+dw BOOT_SIGNATURE
